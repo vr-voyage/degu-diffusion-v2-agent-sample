@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8"/>
+</head>
+<body>
+	<img id="image_generated" src="" />
+	<button id="button_send_job">Send</button>
+	<ul id="status_messages">
+	</ul>
+	<script type="text/javascript">
+		let socket = new WebSocket("ws://localhost:8765");
+
+		function status_message(message)
+		{
+			let li = document.createElement("li");
+			li.textContent = message;
+			return li;
+		}
+
+		function report(message)
+		{
+			status_messages.appendChild(status_message(message));
+			//console.log(message);
+		}
+		
+		async function digestBuffer(msgUint8) {
+			//const msgUint8 = new TextEncoder().encode(message);                           // encode as (utf-8) Uint8Array
+			const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);           // hash the message
+			const hashArray = Array.from(new Uint8Array(hashBuffer));                     // convert buffer to byte array
+			const hashHex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join(''); // convert bytes to hex string
+			return hashHex;
+		}
+
+		socket.onopen = function(e) {
+			report("[open] Connection established");
+		};
+		
+		socket.onmessage = function(event) {
+			console.log(event.data);
+			if (event.data instanceof Blob)
+			{
+				console.log("Invalid type");
+				return;
+			}
+
+			try
+			{
+				const sd_response = JSON.parse(event.data);
+				report(sd_response);
+				if ((sd_response.version !== "0") | (sd_response.type === undefined))
+				{
+					report("[error] Invalid JSON received");
+					return;
+				}
+
+				switch(sd_response.type)
+				{
+					case "@degudiffusion_report_progress":
+						{
+							report(`[degudiffusion_progress] ${sd_response.message}`);
+							break;
+						}
+					case "@degudiffusion_report_error":
+						{
+							report(`[degudiffusion_error] ${sd_response.message}`);
+							break;
+						}
+					case "@degudiffusion_report_rerun":
+						{
+							report(`[degudiffusion_rerun] ${sd_response.cause}`);
+							break;
+						}
+					case "@degudiffusion_txt2img_response":
+						{
+							let base64_string = sd_response.data;
+							let base64_data = new TextEncoder().encode(base64_string);
+							if (base64_data.length !== sd_response.size)
+							{
+								console.log(`Length differ ! ${base64_data.length} != ${sd_response.length}`);
+								return;
+							}
+
+							let digest = digestBuffer(base64_data).then((digest) => { 
+								if (sd_response.digest != digest)
+								{
+									console.log(`Digest differ ! ${sd_response.digest} != ${digest}`);
+									return;
+								}
+
+								image_generated.src = base64_string;
+							})
+							break;
+						}
+					default:
+						report(`Unknown message type ${sd_response.type}`);
+						break;
+				}
+
+
+			}
+			catch(e)
+			{
+				console.log(e);
+				console.log("invalid JSON data received");
+			}
+
+		};
+		
+		socket.onclose = function(event) {
+			if (event.wasClean) {
+				report(`[close] Connection closed cleanly, code=${event.code} reason=${event.reason}`);
+			} else {
+				// e.g. server process killed or network down
+				// event.code is usually 1006 in this case
+				report('[close] Connection died');
+			}
+		};
+		
+		socket.onerror = function(error) {
+			report(`[error] ${error.message}`);
+		};
+		
+		button_send_job.addEventListener('click', (e) => {
+			form_content = {
+				"prompt":        "Degu version 2 by {random_artists}",
+				"n_inferences":   50,
+				"guidance_scale": 7.5,
+				"deterministic":  true,
+				"width":          512,
+				"height":         512
+			}
+
+			socket.send(JSON.stringify(form_content));
+		})
+
+	</script>
+</body>
+</html>
